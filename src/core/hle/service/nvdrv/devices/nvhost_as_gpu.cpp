@@ -293,15 +293,15 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
         }
     }
     auto* session = container.GetSession(nx2_session);
-    auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
+    // An owner, not a raw pointer: with an asynchronous GPU the session can close (and drop its
+    // mapper) before this runs.
+    auto mapper = range.heap && session != nullptr ? session->mapper
+                                                   : std::shared_ptr<NvCore::HeapMapper>{};
     auto& smmu = system.Host1x().MemoryManager();
     // Queued after the GPU unmaps of the range, so the GPU thread is done with it. Outside
-    // `mutex`, as Nx2Map's GPU-thread work.
-    // NOTE: `mapper` is a raw pointer into the session: CloseSession can reset it before this
-    // queued work runs (RomainROCH's review). Keeping it alive needs the queued work to own the
-    // mapper (session->mapper is a unique_ptr) or a fence wait in CloseSession — both outside
-    // this PR's files; the same exposure exists in the pre-PR code.
-    system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
+    // `mutex`, as Nx2Map's GPU-thread work. The mapper is owned, not a raw pointer: with an
+    // asynchronous GPU the session can close (and drop its mapper) before this runs.
+    system.GPU().RunInOrder([&smmu, mapper = std::move(mapper), range, cpu_address, size] {
         if (range.heap) {
             if (mapper != nullptr) {
                 mapper->Unmap(cpu_address, size);
