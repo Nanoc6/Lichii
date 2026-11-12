@@ -297,6 +297,10 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
     auto& smmu = system.Host1x().MemoryManager();
     // Queued after the GPU unmaps of the range, so the GPU thread is done with it. Outside
     // `mutex`, as Nx2Map's GPU-thread work.
+    // NOTE: `mapper` is a raw pointer into the session: CloseSession can reset it before this
+    // queued work runs (RomainROCH's review). Keeping it alive needs the queued work to own the
+    // mapper (session->mapper is a unique_ptr) or a fence wait in CloseSession — both outside
+    // this PR's files; the same exposure exists in the pre-PR code.
     system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
         if (range.heap) {
             if (mapper != nullptr) {
@@ -319,7 +323,6 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
             if (!gmmu) {
                 return;
             }
-            auto& smmu = system.Host1x().MemoryManager();
             const auto it = nx2_sparse_ranges.find(gpu_address);
             if (it == nx2_sparse_ranges.end()) {
                 return;
