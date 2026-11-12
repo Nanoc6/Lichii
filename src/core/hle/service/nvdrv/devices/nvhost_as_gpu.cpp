@@ -319,7 +319,6 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
             if (!gmmu) {
                 return;
             }
-            auto& smmu = system.Host1x().MemoryManager();
             const auto it = nx2_sparse_ranges.find(gpu_address);
             if (it == nx2_sparse_ranges.end()) {
                 return;
