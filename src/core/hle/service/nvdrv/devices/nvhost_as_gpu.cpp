@@ -293,11 +293,14 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
         }
     }
     auto* session = container.GetSession(nx2_session);
-    auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
+    // An owner, not a raw pointer: with an asynchronous GPU the session can close (and drop its
+    // mapper) before this runs.
+    auto mapper = range.heap && session != nullptr ? session->mapper
+                                                   : std::shared_ptr<NvCore::HeapMapper>{};
     auto& smmu = system.Host1x().MemoryManager();
     // Queued after the GPU unmaps of the range, so the GPU thread is done with it. Outside
     // `mutex`, as Nx2Map's GPU-thread work.
-    system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
+    system.GPU().RunInOrder([&smmu, mapper = std::move(mapper), range, cpu_address, size] {
         if (range.heap) {
             if (mapper != nullptr) {
                 mapper->Unmap(cpu_address, size);
