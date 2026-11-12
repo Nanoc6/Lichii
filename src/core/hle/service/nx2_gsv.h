@@ -613,6 +613,9 @@ private:
             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
                       address, size, w[3]);
             if (size != 0) {
+                // The registry's listener calls wait for the GPU thread, whose back takes
+                // m_region_mutex in BackSparseWrite: they run once the lock is released.
+                const Nvidia::Devices::Nx2GpuMemoryRegistry::DeferScope defer;
                 std::scoped_lock lk{m_region_mutex};
                 std::vector<std::pair<u64, u64>> tiles;
                 for (const auto& [tile_address, tile] : m_gpu_only_tiles) {
@@ -668,6 +671,7 @@ private:
                  w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
         if (last > start && ((last + 1 - start) % Core::Memory::YUZU_PAGESIZE) == 0) {
             const u64 size = last + 1 - start;
+            const Nvidia::Devices::Nx2GpuMemoryRegistry::DeferScope defer; // as in 102
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
             if ((w[7] & SparseRegionFlag) == 0) {
@@ -753,6 +757,7 @@ private:
             rb.Push(ResultSuccess);
             return;
         }
+        const Nvidia::Devices::Nx2GpuMemoryRegistry::DeferScope defer; // as in 102
         std::scoped_lock lk{m_region_mutex};
         FreeReleasedRegions();
         if (m_gpu_only_ranges.erase(first) != 0 && last > first) {
@@ -783,13 +788,17 @@ private:
                     region->second.cpu_address, region->second.size);
                 if (!done) {
                     done = std::make_shared<std::atomic<bool>>(false);
-                    system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Defer([this, done] {
+                        system.GPU().RunInOrder(
+                            [done] { done->store(true, std::memory_order_release); });
+                    });
                 }
                 m_released_regions.push_back({std::move(region->second), done});
                 region = m_gpu_only_regions.erase(region);
             }
         }
-        SignalAfterGpu(w[8]);
+        // Behind the unmaps above, outside m_region_mutex.
+        Nvidia::Devices::Nx2GpuMemoryRegistry::Defer([this, slot = w[8]] { SignalAfterGpu(slot); });
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -807,6 +816,7 @@ private:
         const size_t count = data.size() / sizeof(SparseMapRequest);
         std::vector<u8> kinds(count);
         {
+            const Nvidia::Devices::Nx2GpuMemoryRegistry::DeferScope defer; // as in 102
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
             ++m_tile_calls;
@@ -982,7 +992,10 @@ private:
             Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ReleaseBacking(it->second.cpu_address,
                                                                         it->second.size);
             auto done = std::make_shared<std::atomic<bool>>(false);
-            system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+            // Behind the release above (held back while a DeferScope is open).
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Defer([this, done] {
+                system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+            });
             m_gpu_only_bytes -= it->second.size;
             m_released_regions.push_back({std::move(it->second), done});
             m_gpu_only_regions.erase(it);
@@ -1455,7 +1468,11 @@ private:
                                                                         backing->second.size);
             if (!done) {
                 done = std::make_shared<std::atomic<bool>>(false);
-                system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+                // Behind the tile unmap above, held back with it (216's DeferScope).
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Defer([this, done] {
+                    system.GPU().RunInOrder(
+                        [done] { done->store(true, std::memory_order_release); });
+                });
             }
             released += backing->second.size;
             m_released_regions.push_back({std::move(backing->second), done});
