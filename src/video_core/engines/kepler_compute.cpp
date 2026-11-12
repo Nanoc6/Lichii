@@ -25,6 +25,7 @@
 #include "video_core/fire_emblem_upscale.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_list_macro_trace.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/native_upscale.h"
@@ -348,6 +349,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             [&](u64 address, NativeQmdScheduler::Descriptor& descriptor) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) return false;
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
+                if (VideoCommon::ListMacroTrace::g_enabled) {
+                    VideoCommon::ListMacroTrace::NoteQmd(address, descriptor);
+                }
                 if (static u32 logged{}; (descriptor[53] & (1U << 23)) && logged < 8) {
                     ++logged;
                     LOG_INFO(HW_GPU, "Native QMD {:#x} releases: {:08x} | {:08x} | {:08x}", address,
@@ -1614,6 +1618,12 @@ void KeplerCompute::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit&
     }
 }
 
+bool KeplerCompute::FrontRunsMacroWord(u32 method) const {
+    const auto& executing = front ? front->executing_macro : native_executing_macro;
+    return method >= 0xe00 && method < native_registers.size() &&
+           (executing || (method & 1) == 0);
+}
+
 void KeplerCompute::FrontNoteReport(VideoCommon::GpuSplit& split, const FrontState& fs,
                                     u32 control) {
     // SET_REPORT_SEMAPHORE_D was sent: what ProcessNativeReportSemaphore will write on the back.
@@ -1662,20 +1672,32 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
 void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                                   FrontState& fs) {
     const auto positions = FrontMacroPositions(fs);
-    const u32 start = positions[((*fs.executing_macro - 0xe00) / 2) % positions.size()];
+    const u32 method = *fs.executing_macro;
+    const u32 start = positions[((method - 0xe00) / 2) % positions.size()];
     fs.executing_macro.reset();
     auto& macro = FrontMacroEngine(fs);
     if (native_data_ram) {
         macro.native_interpreter.active_dram = native_data_ram;
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
-    const auto read = [&fs](u32 address) {
-        return address < fs.registers.size() ? fs.registers[address] : 0U;
+    namespace ListTrace = VideoCommon::ListMacroTrace;
+    ListTrace::Call* const trace =
+        ListTrace::g_enabled
+            ? ListTrace::BeginCall(ListTrace::Engine::Compute, static_cast<EngineInterface*>(this),
+                                   method, macro.native_code, macro.native_code_generation, start,
+                                   fs.parameters, *macro.native_interpreter.active_dram,
+                                   fs.registers)
+            : nullptr;
+    const auto read = [&fs, trace](u32 address) {
+        const u32 value = address < fs.registers.size() ? fs.registers[address] : 0U;
+        ListTrace::NoteRead(trace, address, value);
+        return value;
     };
     const auto emit = [&](u32 address, u32 value) {
         if (address >= 0xe00) {
             return false;
         }
+        ListTrace::NoteWrite(trace, address, value);
         FrontApply(fs, address, value);
         split.MacroWrite(this, address, value);
         if (address == 0x6c3) {
@@ -1688,8 +1710,12 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         macro.native_jit = std::make_shared<TuringMacroJit>();
     }
     macro.native_jit->Prepare(macro.native_code, macro.native_code_generation);
-    const auto result = macro.native_jit->Execute(
-        start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram}, read, emit);
+    const auto result =
+        trace != nullptr && trace->data_ram
+            ? macro.native_interpreter.Execute(macro.native_code, start, fs.parameters, read, emit)
+            : macro.native_jit->Execute(start, fs.parameters,
+                                        std::span<u32>{*macro.native_interpreter.active_dram},
+                                        read, emit);
 #else
     const auto result =
         macro.native_interpreter.Execute(macro.native_code, start, fs.parameters, read, emit);
@@ -1698,6 +1724,10 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         macro.native_execution_failed = true;
         LOG_ERROR(HW_GPU, "Native MME (split front) failed: compute start={:#x}, consumed={}, error={}",
                   start, result.consumed, result.error);
+    }
+    if (trace != nullptr) {
+        ListTrace::EndCall(*trace, false, macro.native_interpreter.data_ram_reads,
+                           macro.native_interpreter.data_ram_writes);
     }
     fs.parameters.clear();
 }

@@ -165,6 +165,8 @@ add_library(
     cpu_features.h
     httplib.h
     net/net.h net/net.cpp
+    nextendo.cpp
+    nextendo.h
     container/unordered_map.h container/unordered_set.h)
 
 # The ZBIC decoder runs once per module at load, so a profile buys it nothing, and the aarch64
@@ -175,7 +177,9 @@ set_source_files_properties(zbic_compression.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wno-unused-function;-Wno-missing-declarations;-Wno-shadow>;$<$<CXX_COMPILER_ID:MSVC>:/wd4505;/wd5245>;$<$<CXX_COMPILER_ID:AppleClang,Clang>:-fno-profile-instr-use>")
 
 if(WIN32)
-    target_sources(common PRIVATE windows/timer_resolution.cpp
+    target_sources(common PRIVATE windows/crash_handler.cpp
+        windows/crash_handler.h
+        windows/timer_resolution.cpp
         windows/timer_resolution.h)
     target_link_libraries(common PRIVATE dxgi ntdll)
 endif()
@@ -259,7 +263,7 @@ if (BOOST_NO_HEADERS)
 else()
     target_link_libraries(common PUBLIC Boost::headers)
 endif()
-target_link_libraries(common PRIVATE OpenSSL::SSL)
+target_link_libraries(common PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(common PUBLIC Boost::filesystem Boost::context httplib::httplib nlohmann_json::nlohmann_json)
 
 if (lz4_ADDED)
