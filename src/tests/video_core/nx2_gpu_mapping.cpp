@@ -259,6 +259,7 @@ TEST_CASE("NX2 changes made in a defer scope reach listeners after it, in order"
     // Without a scope, Defer runs right away.
     Registry::Defer([&] { recorder.Add("now"); });
     REQUIRE(recorder.Get().back() == "now");
+}
 
 namespace {
 using Service::Nvidia::Devices::Nx2EraseContainedRanges;
