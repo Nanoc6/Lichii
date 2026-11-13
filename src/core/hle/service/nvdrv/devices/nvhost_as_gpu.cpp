@@ -245,6 +245,7 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
                 if (address != 0) {
                     smmu.Map(address, cpu_address, size, session->asid, true);
                     fresh = true;
+                    Nx2NoteDeviceSpace(Common::AlignUp(size, 0x20000), 0);
                 }
                 return address;
             };
